@@ -30,6 +30,75 @@ async function broadcastTg(token, text, buttons = null) {
   const results = await Promise.all(CHAT_IDS.map(id => sendTg(token, id, text, buttons)));
   return results;
 }
+
+// ── PDF watermark + send as file ───────────────────────────────────────────
+async function watermarkAndSendPdf(token, chatId, pdfUrl, caption) {
+  try {
+    const { PDFDocument, rgb, degrees } = require('pdf-lib');
+
+    // Download original PDF
+    const res      = await fetch(pdfUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://nests.tribal.gov.in/' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) throw new Error(`Download failed: ${res.status}`);
+    const pdfBytes = Buffer.from(await res.arrayBuffer());
+
+    // Load and watermark every page
+    const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+    const pages  = pdfDoc.getPages();
+
+    for (const page of pages) {
+      const { width, height } = page.getSize();
+      const fontSize = Math.min(width, height) * 0.07;
+
+      // Draw watermark diagonally across the page (repeated grid)
+      const text   = 'BY PATEL';
+      const cols   = 3;
+      const rows   = 4;
+      for (let c = 0; c < cols; c++) {
+        for (let r = 0; r < rows; r++) {
+          page.drawText(text, {
+            x:        (width  / cols) * c + fontSize,
+            y:        (height / rows) * r + fontSize,
+            size:     fontSize,
+            color:    rgb(0.75, 0.75, 0.75),  // light grey
+            opacity:  0.35,
+            rotate:   degrees(45),
+          });
+        }
+      }
+    }
+
+    const watermarked = await pdfDoc.save();
+
+    // Send as document via Telegram multipart/form-data
+    const FormData = require('form-data');
+    const form     = new FormData();
+    form.append('chat_id',  chatId);
+    form.append('caption',  caption, { contentType: 'text/plain' });
+    form.append('parse_mode', 'HTML');
+    form.append('document', Buffer.from(watermarked), {
+      filename:    'NESTS_Notice.pdf',
+      contentType: 'application/pdf',
+    });
+
+    await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
+      method: 'POST',
+      body:   form,
+      headers: form.getHeaders(),
+    });
+  } catch (e) {
+    // Fallback: send link-only message if PDF processing fails
+    console.error('watermarkAndSendPdf error:', e.message);
+    await sendTg(token, chatId, caption + `\n\n⚠ <i>PDF attachment failed: ${e.message}</i>`);
+  }
+}
+
+// Broadcast watermarked PDF to all CHAT_IDS
+async function broadcastPdf(token, pdfUrl, caption) {
+  await Promise.all(CHAT_IDS.map(id => watermarkAndSendPdf(token, id, pdfUrl, caption)));
+}
 const PORT      = process.env.PORT      || 3000;
 
 const KNOWN = [
@@ -217,9 +286,15 @@ async function sendScanResults(chatId) {
     }
   }
 
-  // Send to the requesting chatId first, then all other configured chats
+  // Send text summary to requesting chatId + all configured chats
   const targets = new Set([chatId, ...CHAT_IDS]);
   await Promise.all([...targets].map(id => sendTg(BOT_TOKEN, id, msg)));
+
+  // Attach each found PDF with watermark
+  for (const p of found) {
+    const cap = `📄 <b>NESTS Notice</b>\n📅 ${p.date}\n🔗 ${p.url}`;
+    await Promise.all([...targets].map(id => watermarkAndSendPdf(BOT_TOKEN, id, p.url, cap)));
+  }
 }
 
 // ── Routes ─────────────────────────────────────────────────────────────────
@@ -336,7 +411,7 @@ app.post('/webhook', async (req, res) => {
         `👋 <b>NESTS PDF Scanner</b>\n\n`
       + `Scans NESTS exam notice PDFs in reverse (latest first).\n\n`
       + `Tap below to open the live scanner:`,
-        [[{ text: '🔍 Open Live Scanner', web_app: { url: `https://emrsnotice.onrender.com/?cid=${chatId}` } }],
+        [[{ text: '🔍 Open Live Scanner', web_app: { url: `https://${req.get('host')}/?cid=${chatId}` } }],
          [{ text: '📋 Known PDFs', callback_data: 'known' },
           { text: '📊 Status',    callback_data: 'status' }]]
       );
@@ -477,8 +552,14 @@ async function runAutoScan() {
              + `🔗 <a href="${p.url}">Open PDF</a>\n\n`;
       }
 
+      // Send text alert first, then attach each PDF with watermark
       await broadcastTg(BOT_TOKEN, msg);
-      addLog(`[AUTO] ✅ Alert sent to ${CHAT_IDS.length} chat(s) (${newFinds.length} new PDF)`, 'success');
+      for (const p of newFinds) {
+        const cap = `📄 <b>NESTS Notice</b>\n📅 ${p.date}\n🔗 ${p.url}`;
+        await broadcastPdf(BOT_TOKEN, p.url, cap);
+        addLog(`[AUTO] 📎 PDF sent: ${p.id}.pdf (watermarked)`, 'success');
+      }
+      addLog(`[AUTO] ✅ Alert + PDF(s) sent to ${CHAT_IDS.length} chat(s)`, 'success');
 
       // Also push to Found PDFs panel on any connected clients
       broadcast('stats', {

@@ -18,6 +18,18 @@ app.use(express.json());
 
 const BOT_TOKEN = process.env.BOT_TOKEN || '';
 const CHAT_ID   = process.env.CHAT_ID   || '';
+// Support multiple chat IDs — comma separated in env var CHAT_IDS
+// e.g. CHAT_IDS=123456789,-1001234567890,987654321
+// Falls back to single CHAT_ID if CHAT_IDS not set
+const CHAT_IDS  = process.env.CHAT_IDS
+  ? process.env.CHAT_IDS.split(',').map(s => s.trim()).filter(Boolean)
+  : (CHAT_ID ? [CHAT_ID] : []);
+
+// Helper: send to ALL configured chats
+async function broadcastTg(token, text, buttons = null) {
+  const results = await Promise.all(CHAT_IDS.map(id => sendTg(token, id, text, buttons)));
+  return results;
+}
 const PORT      = process.env.PORT      || 3000;
 
 const KNOWN = [
@@ -205,7 +217,9 @@ async function sendScanResults(chatId) {
     }
   }
 
-  await sendTg(BOT_TOKEN, chatId, msg);
+  // Send to the requesting chatId first, then all other configured chats
+  const targets = new Set([chatId, ...CHAT_IDS]);
+  await Promise.all([...targets].map(id => sendTg(BOT_TOKEN, id, msg)));
 }
 
 // ── Routes ─────────────────────────────────────────────────────────────────
@@ -451,8 +465,7 @@ async function runAutoScan() {
 
   // Send Telegram alert ONLY if new PDFs were found
   if (newFinds.length > 0) {
-    const chatId = CHAT_ID || job.chatId;
-    if (chatId && BOT_TOKEN) {
+    if (CHAT_IDS.length > 0 && BOT_TOKEN) {
       let msg = `🔔 <b>NESTS Auto-Scan Alert</b>\n\n`
               + `🆕 Found <b>${newFinds.length}</b> new PDF(s):\n\n`;
 
@@ -464,8 +477,8 @@ async function runAutoScan() {
              + `🔗 <a href="${p.url}">Open PDF</a>\n\n`;
       }
 
-      await sendTg(BOT_TOKEN, chatId, msg);
-      addLog(`[AUTO] ✅ Alert sent to Telegram (${newFinds.length} new PDF)`, 'success');
+      await broadcastTg(BOT_TOKEN, msg);
+      addLog(`[AUTO] ✅ Alert sent to ${CHAT_IDS.length} chat(s) (${newFinds.length} new PDF)`, 'success');
 
       // Also push to Found PDFs panel on any connected clients
       broadcast('stats', {
@@ -477,7 +490,7 @@ async function runAutoScan() {
         eta:      0,
       });
     } else {
-      addLog('[AUTO] ⚠ No CHAT_ID set — Telegram alert skipped', 'warn');
+      addLog('[AUTO] ⚠ No CHAT_IDS set — Telegram alert skipped', 'warn');
     }
   }
 

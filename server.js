@@ -385,14 +385,14 @@ const autoSeenIds = new Set([...KNOWN_IDS]);
 
 async function runAutoScan() {
   // If a manual scan is running, skip this tick to avoid server overload.
-  // Auto-scan will resume on the next 5-minute tick automatically.
+  // Auto-scan will resume on the next 30-second tick automatically.
   if (job.status === 'running') {
     addLog('[AUTO] Tick skipped — manual scan in progress', 'progress');
     return;
   }
 
   const now        = nowEpoch();
-  const windowSecs = 600; // scan last 10 min each tick (covers 5-min interval with overlap)
+  const windowSecs = 60; // ← CHANGED: scan last 60s each tick (covers 30s interval with overlap)
   const startEp    = now;
   const endEp      = now - windowSecs;
 
@@ -404,7 +404,7 @@ async function runAutoScan() {
   if (ids.length === 0) return; // all already seen, nothing to do
 
   addLog(`${'─'.repeat(52)}`, 'divider');
-  addLog(`[AUTO] Scanning last 10 min (${ids.length} IDs) ...`, 'progress');
+  addLog(`[AUTO] Scanning last 60s (${ids.length} IDs) ...`, 'progress');
 
   const startT = Date.now();
   const hits   = [];
@@ -486,12 +486,12 @@ async function runAutoScan() {
 
 // Run once 30 seconds after server starts (let server fully boot first)
 setTimeout(() => {
-  addLog('[AUTO] Auto-scan initialized — runs every 5 minutes', 'success');
+  addLog('[AUTO] Auto-scan initialized — runs every 30 seconds', 'success');
   runAutoScan();
 }, 30 * 1000);
 
-// Then repeat every 5 minutes
-setInterval(runAutoScan, 5 * 60 * 1000);
+// ← CHANGED: every 30 seconds instead of every 5 minutes
+setInterval(runAutoScan, 30 * 1000);
 
 // ── Start server ───────────────────────────────────────────────────────────
 app.listen(PORT, () => console.log(`NESTS Scanner running on :${PORT}`));

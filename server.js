@@ -599,6 +599,9 @@ async function instantLoop() {
       autoSeenIds.add(String(now));
       const result = await checkPdf(String(now));
 
+      // Log every single second tick in terminal
+      addLog(`[${String(now)}] ↓ ${epochToIST(now)}  checking...`, 'progress');
+
       if (result.hit && !result.known) {
         const sizeStr = result.size > 0 ? ` [${Math.round(result.size / 1024)}KB]` : '';
         addLog(`[INSTANT] ★ NEW ★ ${result.id}.pdf  ${result.date}${sizeStr}`, 'found');

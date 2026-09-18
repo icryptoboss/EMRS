@@ -1,4 +1,4 @@
-﻿/**
+/**
  * NESTS PDF Scanner — Render.com Web Service
  * ENV VARS: BOT_TOKEN, CHAT_ID, CHAT_IDS (comma-sep), PORT
  */
@@ -374,6 +374,12 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--s
 .win-btn{padding:5px 10px;border-radius:6px;border:1px solid #30363d;background:var(--bg2);color:var(--hint);font-size:12px;font-weight:500;cursor:pointer;transition:all .15s;white-space:nowrap}
 .win-btn.active{background:#1f6feb;color:#fff;border-color:#1f6feb}
 .win-btn:hover:not(.active){border-color:var(--hint);color:var(--text)}
+.custom-row{display:flex;align-items:center;gap:10px;background:var(--bg2);border:1px solid #30363d;border-radius:8px;padding:8px 12px}
+.custom-lbl{font-size:11px;color:var(--hint);white-space:nowrap;min-width:54px}
+.custom-val{font-size:12px;font-weight:700;color:var(--blue);white-space:nowrap;min-width:60px;text-align:right}
+input[type=range]{flex:1;-webkit-appearance:none;height:4px;border-radius:2px;background:#30363d;outline:none;cursor:pointer}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#1f6feb;cursor:pointer;border:2px solid #0d1117}
+input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:2px}
 .ctrl-row{display:flex;gap:8px}
 .btn-start,.btn-stop{padding:9px 18px;border-radius:8px;border:none;font-size:13px;font-weight:600;cursor:pointer;transition:opacity .15s;white-space:nowrap}
 .btn-start{background:#238636;color:#fff;flex:1}.btn-start:disabled{opacity:.45;cursor:not-allowed}
@@ -423,11 +429,17 @@ input:checked+.slider{background:#238636}input:checked+.slider:before{transform:
   <div class="win-row" id="winRow">
     <div class="win-btn" data-s="300" data-l="5 min">5 min</div>
     <div class="win-btn" data-s="1800" data-l="30 min">30 min</div>
-    <div class="win-btn" data-s="3600" data-l="1 hour">1 hr</div>
+    <div class="win-btn" data-s="3600" data-l="1 hr">1 hr</div>
+    <div class="win-btn" data-s="7200" data-l="2 hours">2 hr</div>
     <div class="win-btn" data-s="21600" data-l="6 hours">6 hr</div>
     <div class="win-btn active" data-s="86400" data-l="1 day">1 day</div>
     <div class="win-btn" data-s="259200" data-l="3 days">3 days</div>
-    <div class="win-btn" data-s="432000" data-l="5 days">5 days</div>
+    <div class="win-btn" data-s="604800" data-l="7 days">7 days</div>
+  </div>
+  <div class="custom-row">
+    <span class="custom-lbl">Custom</span>
+    <input type="range" id="customSlider" min="1" max="1000" value="500">
+    <span class="custom-val" id="customVal">1 day</span>
   </div>
   <div class="ctrl-row">
     <button class="btn-start" id="startBtn" onclick="startScan()">Start Scan</button>
@@ -474,7 +486,16 @@ if (CHAT_ID) document.getElementById('chatLabel').textContent = 'Chat: ' + CHAT_
 var windowSecs=86400, windowLabel='1 day', scanning=false, evtSrc=null;
 function epochToIST(ts){var d=new Date((Number(ts)+19800)*1000),p=function(n){return String(n).padStart(2,'0')};return d.getUTCFullYear()+'-'+p(d.getUTCMonth()+1)+'-'+p(d.getUTCDate())+' '+p(d.getUTCHours())+':'+p(d.getUTCMinutes())+':'+p(d.getUTCSeconds())+' IST';}
 setInterval(function(){document.getElementById('clock').textContent=epochToIST(Math.floor(Date.now()/1000));},1000);
-document.getElementById('winRow').addEventListener('click',function(e){var btn=e.target.closest('.win-btn');if(!btn||scanning)return;document.querySelectorAll('.win-btn').forEach(function(b){b.classList.remove('active')});btn.classList.add('active');windowSecs=parseInt(btn.dataset.s);windowLabel=btn.dataset.l;});
+// Preset buttons
+document.getElementById('winRow').addEventListener('click',function(e){var btn=e.target.closest('.win-btn');if(!btn||scanning)return;document.querySelectorAll('.win-btn').forEach(function(b){b.classList.remove('active')});btn.classList.add('active');windowSecs=parseInt(btn.dataset.s);windowLabel=btn.dataset.l;syncSliderToSecs(windowSecs);});
+// Custom slider — log scale: slider 1-1000 maps to 60s – 604800s (1min – 7days)
+function sliderToSecs(v){var mn=Math.log(60),mx=Math.log(604800);return Math.round(Math.exp(mn+(mx-mn)*(v-1)/999));}
+function secsToSlider(s){var mn=Math.log(60),mx=Math.log(604800);return Math.round(1+(Math.log(Math.max(60,Math.min(604800,s)))-mn)/(mx-mn)*999);}
+function secsToLabel(s){if(s<120)return s+'s';if(s<3600)return Math.round(s/60)+'m';if(s<86400){var h=Math.floor(s/3600),m=Math.round((s%3600)/60);return h+'h'+(m?m+'m':'');}var d=Math.floor(s/86400),h2=Math.round((s%86400)/3600);return d+'d'+(h2?h2+'h':'');}
+function syncSliderToSecs(s){document.getElementById('customSlider').value=secsToSlider(s);document.getElementById('customVal').textContent=secsToLabel(s);}
+syncSliderToSecs(86400);
+document.getElementById('customSlider').addEventListener('input',function(){if(scanning)return;var s=sliderToSecs(parseInt(this.value));windowSecs=s;windowLabel=secsToLabel(s);document.getElementById('customVal').textContent=windowLabel;document.querySelectorAll('.win-btn').forEach(function(b){b.classList.remove('active');});});
+document.getElementById('customSlider').addEventListener('touchstart',function(){},{passive:true});
 var termEl=document.getElementById('termLines'),cursorEl=document.getElementById('cursor'),autoScroll=true;
 termEl.addEventListener('scroll',function(){autoScroll=termEl.scrollTop+termEl.clientHeight>=termEl.scrollHeight-20;});
 function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}

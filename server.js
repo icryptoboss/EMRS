@@ -93,16 +93,16 @@ async function sendPdfToChat(chatId, pdfUrl, caption) {
         form.append('parse_mode', 'HTML');
         form.append('document', pdfBytes, { filename: 'NESTS_Notice.pdf', contentType: 'application/pdf' });
 
-        const formBuffer = await new Promise((resolve, reject) => {
-            const chunks = [];
-            form.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-            form.on('end', () => resolve(Buffer.concat(chunks)));
-            form.on('error', reject);
-        });
-        addLog(`[PDF] Sending ${Math.round(formBuffer.length/1024)}KB to chat ${chatId}...`, 'info');
+        // getBuffer() is synchronous — works reliably when all fields are
+        // Buffers/strings. The previous stream-based approach hung because
+        // Node.js 24 requires an explicit pipe/resume to start a stream.
+        const formBuffer = form.getBuffer();
+        const formHeaders = form.getHeaders();
+        formHeaders['content-length'] = formBuffer.length;
+        addLog(`[PDF] Sending ${Math.round(formBuffer.length / 1024)}KB to chat ${chatId}...`, 'info');
 
         const tgRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
-            method: 'POST', body: formBuffer, headers: form.getHeaders(),
+            method: 'POST', body: formBuffer, headers: formHeaders,
         });
         if (!tgRes.ok) {
             const err = await tgRes.text();

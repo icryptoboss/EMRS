@@ -222,6 +222,7 @@ async function sendScanResults(chatId) {
         await Promise.all([...targets].map(id => sendPdfToChat(id, p.url, cap)));
     }
     addLog('All PDFs sent.', 'success');
+}
 
 // ── Auto-seen tracker ──────────────────────────────────────────────────────
 const autoSeenIds = new Set([...KNOWN_IDS]);

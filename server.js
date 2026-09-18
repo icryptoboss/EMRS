@@ -78,12 +78,14 @@ async function broadcastTg(text, buttons = null) {
  */
 async function sendPdfToChat(chatId, pdfUrl, caption) {
     try {
+        addLog(`[PDF] Downloading ${pdfUrl.slice(-20)}...`, 'info');
         const dlRes = await fetch(pdfUrl, {
             headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://nests.tribal.gov.in/' },
             signal: AbortSignal.timeout(30000),
         });
         if (!dlRes.ok) throw new Error(`Download failed: ${dlRes.status}`);
         const pdfBytes = Buffer.from(await dlRes.arrayBuffer());
+        addLog(`[PDF] Downloaded ${Math.round(pdfBytes.length/1024)}KB, building form...`, 'info');
 
         const form = new FormData();
         form.append('chat_id', String(chatId));
@@ -97,6 +99,7 @@ async function sendPdfToChat(chatId, pdfUrl, caption) {
             form.on('end', () => resolve(Buffer.concat(chunks)));
             form.on('error', reject);
         });
+        addLog(`[PDF] Sending ${Math.round(formBuffer.length/1024)}KB to chat ${chatId}...`, 'info');
 
         const tgRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
             method: 'POST', body: formBuffer, headers: form.getHeaders(),
@@ -105,10 +108,18 @@ async function sendPdfToChat(chatId, pdfUrl, caption) {
             const err = await tgRes.text();
             throw new Error(`Telegram ${tgRes.status}: ${err}`);
         }
+        addLog(`[PDF] Sent to ${chatId}`, 'success');
     } catch (e) {
         console.error(`sendPdfToChat(${chatId}):`, e.message);
-        addLog(`PDF failed (${chatId}): ${e.message}`, 'error');
-        await sendTg(chatId, caption + `\n\n PDF upload failed: ${e.message}`);
+        addLog(`[PDF] FAILED (${chatId}): ${e.message}`, 'error');
+        // Fallback: plain text, no parse_mode so HTML errors don't compound
+        try {
+            await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: String(chatId), text: `PDF upload failed: ${e.message}\n${pdfUrl}`, disable_web_page_preview: false }),
+            });
+        } catch (e2) { console.error('fallback sendTg failed:', e2.message); }
     }
 }
 
@@ -202,12 +213,15 @@ async function sendScanResults(chatId) {
             + `<a href="${p.url}">Open PDF</a>\n\n`;
     }
     const targets = new Set([chatId, ...CHAT_IDS]);
+    addLog(`Sending summary text to ${targets.size} chat(s)...`, 'info');
     await Promise.all([...targets].map(id => sendTg(id, msg)));
+    addLog(`Sending ${found.length} PDF(s) to ${targets.size} chat(s)...`, 'info');
     for (const p of found) {
         const cap = `<b>NESTS Notice</b>\n${p.date}\n${p.url}`;
+        addLog(`[PDF] Uploading ${p.id}.pdf...`, 'info');
         await Promise.all([...targets].map(id => sendPdfToChat(id, p.url, cap)));
     }
-}
+    addLog('All PDFs sent.', 'success');
 
 // ── Auto-seen tracker ──────────────────────────────────────────────────────
 const autoSeenIds = new Set([...KNOWN_IDS]);

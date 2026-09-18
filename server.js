@@ -91,29 +91,22 @@ async function brandPdf(pdfBytes) {
         for (const page of pages) {
             const { width, height } = page.getSize();
 
-            // 1. Watermark: 2-3 bold diagonal lines in behind
-            const wFontSize = Math.max(28, Math.min(width, height) * 0.082);
-            const wTextWidth = font.widthOfTextAtSize(watermarkText, wFontSize);
-            const halfTextDiag = (wTextWidth / 2) * Math.SQRT1_2;
-            const spacing = height * 0.26;
-
-            // 3 diagonal lines: top, center, bottom
-            const offsets = [spacing, 0, -spacing];
-            for (const d of offsets) {
-                const cx = (width / 2) - (d * Math.SQRT1_2);
-                const cy = (height / 2) + (d * Math.SQRT1_2);
-                const tx = cx - halfTextDiag;
-                const ty = cy - halfTextDiag;
-
-                page.drawText(watermarkText, {
-                    x: tx,
-                    y: ty,
-                    size: wFontSize,
-                    font,
-                    color: rgb(0.68, 0.68, 0.68),
-                    opacity: 0.20,
-                    rotate: degrees(45),
-                });
+            // 1. Watermark: Repeated diagonal grid
+            const wFontSize = Math.max(16, Math.min(width, height) * 0.055);
+            const cols = 3;
+            const rows = 4;
+            for (let c = 0; c < cols; c++) {
+                for (let r = 0; r < rows; r++) {
+                    page.drawText(watermarkText, {
+                        x: (width / cols) * c + 25,
+                        y: (height / rows) * r + 25,
+                        size: wFontSize,
+                        font,
+                        color: rgb(0.72, 0.72, 0.72),
+                        opacity: 0.28,
+                        rotate: degrees(45),
+                    });
+                }
             }
 
             // Banner styling & layout
@@ -196,18 +189,39 @@ async function brandPdf(pdfBytes) {
         }
 
         const brandedPdfBytes = await pdfDoc.save();
-        return Buffer.from(brandedPdfBytes);
+        return { brandedBytes: Buffer.from(brandedPdfBytes), modified: true };
     } catch (e) {
         addLog(`[PDF] Watermark warning: ${e.message}, sending original PDF`, 'warn');
         console.error('brandPdf error:', e);
-        return pdfBytes;
+        return { brandedBytes: pdfBytes, modified: false };
     }
 }
 
-function formatNoticeCaption(item, fallbackSizeKb = 0) {
-    const sizeKb = (item.size && item.size > 0) ? Math.round(item.size / 1024) : (fallbackSizeKb || 0);
-    const sizePart = sizeKb > 0 ? `📦 ${sizeKb}KB\n` : '';
-    return `🚨 <b>NESTS New Notice Found!</b>\n📄 <code>${item.id}</code>\n📅 ${item.date}\n${sizePart}🔗 <a href="${item.url}">Open PDF</a>`;
+/**
+ * Build caption in format:
+ * 🚨 NESTS New Notice Found!
+ * 📄 {epoch}
+ * 📅 {date}
+ * 📦 {sizeKB}
+ * 🔗 [Open PDF]({url})  <-- only when pdf was not modified
+ */
+function buildPdfCaption(pdfUrl, sizeBytes, modified) {
+    const match = pdfUrl.match(/(\d+)\.pdf$/i);
+    const epoch = match ? match[1] : (pdfUrl.split('/').pop().replace(/\.pdf$/i, '') || String(nowEpoch()));
+    const dateStr = /^\d+$/.test(epoch) ? epochToIST(epoch) : nowIST();
+    const sizeKB = sizeBytes > 0 ? `${Math.round(sizeBytes / 1024)}KB` : '';
+
+    let caption = `🚨 <b>NESTS New Notice Found!</b>\n`
+        + `📄 <code>${epoch}</code>\n`
+        + `📅 ${dateStr}\n`
+        + (sizeKB ? `📦 ${sizeKB}\n` : '');
+
+    // attach open pdf link only when pdf file not modified
+    if (!modified) {
+        caption += `🔗 <a href="${pdfUrl}">Open PDF</a>`;
+    }
+
+    return caption.trim();
 }
 
 /**
@@ -216,7 +230,7 @@ function formatNoticeCaption(item, fallbackSizeKb = 0) {
  * Node.js fetch cannot set Content-Length on a stream, Telegram rejects with 400.
  * Buffering gives fetch a Buffer with a known size — Telegram accepts it.
  */
-async function sendPdfToChat(chatId, pdfUrl, caption) {
+async function sendPdfToChat(chatId, pdfUrl, customCaption = null) {
     try {
         addLog(`[PDF] Downloading ${pdfUrl.slice(-20)}...`, 'info');
         const dlRes = await fetch(pdfUrl, {
@@ -233,25 +247,15 @@ async function sendPdfToChat(chatId, pdfUrl, caption) {
         const filename = `EMRS Notice ${epoch} @examschats.pdf`;
 
         // Apply watermark and banners
-        const brandedBytes = await brandPdf(rawBytes);
-        addLog(`[PDF] Branded ${Math.round(brandedBytes.length / 1024)}KB [${filename}], building form...`, 'info');
+        const { brandedBytes, modified } = await brandPdf(rawBytes);
+        addLog(`[PDF] ${modified ? 'Branded' : 'Original'} ${Math.round(brandedBytes.length / 1024)}KB [${filename}], building form...`, 'info');
 
-        // Ensure caption includes accurate size
-        const sizeKb = Math.round(rawBytes.length / 1024);
-        let finalCaption = caption;
-        if (!finalCaption) {
-            finalCaption = formatNoticeCaption({ id: epoch, date: epochToIST(epoch), url: pdfUrl }, sizeKb);
-        } else if (!finalCaption.includes('📦') && sizeKb > 0) {
-            if (finalCaption.includes('🔗')) {
-                finalCaption = finalCaption.replace('🔗', `📦 ${sizeKb}KB\n🔗`);
-            } else {
-                finalCaption += `\n📦 ${sizeKb}KB`;
-            }
-        }
+        // Build caption adhering to requested format: attach link only when not modified
+        const caption = customCaption || buildPdfCaption(pdfUrl, rawBytes.length, modified);
 
         const form = new FormData();
         form.append('chat_id', String(chatId));
-        form.append('caption', finalCaption);
+        form.append('caption', caption);
         form.append('parse_mode', 'HTML');
         form.append('document', brandedBytes, { filename, contentType: 'application/pdf' });
 
@@ -272,19 +276,25 @@ async function sendPdfToChat(chatId, pdfUrl, caption) {
     } catch (e) {
         console.error(`sendPdfToChat(${chatId}):`, e.message);
         addLog(`[PDF] FAILED (${chatId}): ${e.message}`, 'error');
-        // Fallback: plain text, no parse_mode so HTML errors don't compound
+        // Fallback: send text message with open link since PDF failed to upload
         try {
+            const fallbackCaption = buildPdfCaption(pdfUrl, 0, false);
             await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ chat_id: String(chatId), text: `PDF upload failed: ${e.message}\n${pdfUrl}`, disable_web_page_preview: false }),
+                body: JSON.stringify({
+                    chat_id: String(chatId),
+                    text: fallbackCaption,
+                    parse_mode: 'HTML',
+                    disable_web_page_preview: false,
+                }),
             });
         } catch (e2) { console.error('fallback sendTg failed:', e2.message); }
     }
 }
 
-async function broadcastPdf(pdfUrl, caption) {
-    await Promise.all(CHAT_IDS.map(id => sendPdfToChat(id, pdfUrl, caption)));
+async function broadcastPdf(pdfUrl, customCaption = null) {
+    await Promise.all(CHAT_IDS.map(id => sendPdfToChat(id, pdfUrl, customCaption)));
 }
 
 async function checkPdf(id) {
@@ -377,9 +387,8 @@ async function sendScanResults(chatId) {
     await Promise.all([...targets].map(id => sendTg(id, msg)));
     addLog(`Sending ${found.length} PDF(s) to ${targets.size} chat(s)...`, 'info');
     for (const p of found) {
-        const cap = formatNoticeCaption(p);
         addLog(`[PDF] Uploading ${p.id}.pdf...`, 'info');
-        await Promise.all([...targets].map(id => sendPdfToChat(id, p.url, cap)));
+        await Promise.all([...targets].map(id => sendPdfToChat(id, p.url)));
     }
     addLog('All PDFs sent.', 'success');
 }
@@ -406,8 +415,8 @@ async function instantLoop() {
                 addLog(`[INSTANT] NEW: ${result.id}.pdf  ${result.date}${sz}`, 'found');
                 broadcast('hit', result);
                 if (BOT_TOKEN && CHAT_IDS.length > 0) {
-                    const cap = formatNoticeCaption(result);
-                    await broadcastPdf(result.url, cap);
+                    addLog(`[INSTANT] Uploading ${result.id}.pdf...`, 'info');
+                    await broadcastPdf(result.url);
                     addLog(`[INSTANT] PDF sent to ${CHAT_IDS.length} chat(s)`, 'success');
                 }
             } else if (result.hit && result.known) {
@@ -427,8 +436,8 @@ async function instantLoop() {
                         addLog(`[CATCHUP] NEW: ${r.id}.pdf  ${r.date}`, 'found');
                         broadcast('hit', r);
                         if (BOT_TOKEN && CHAT_IDS.length > 0) {
-                            const cap = formatNoticeCaption(r);
-                            await broadcastPdf(r.url, cap);
+                            addLog(`[CATCHUP] Uploading ${r.id}.pdf...`, 'info');
+                            await broadcastPdf(r.url);
                             addLog(`[CATCHUP] PDF sent: ${r.id}.pdf`, 'success');
                         }
                     }

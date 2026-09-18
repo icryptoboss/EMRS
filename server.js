@@ -31,63 +31,30 @@ async function broadcastTg(token, text, buttons = null) {
     return results;
 }
 
-// ── PDF watermark + send as file ───────────────────────────────────────────
+// ── Send PDF directly (no watermark) ──────────────────────────────────────
 async function watermarkAndSendPdf(token, chatId, pdfUrl, caption) {
     try {
-        const { PDFDocument, rgb, degrees } = require('pdf-lib');
-
-        // Download original PDF
+        // Download the PDF directly
         const res = await fetch(pdfUrl, {
             headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://nests.tribal.gov.in/' },
-            signal: AbortSignal.timeout(15000),
+            signal: AbortSignal.timeout(30000),
         });
         if (!res.ok) throw new Error(`Download failed: ${res.status}`);
         const pdfBytes = Buffer.from(await res.arrayBuffer());
 
-        // Load and watermark every page
-        const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
-        const pages = pdfDoc.getPages();
-
-        for (const page of pages) {
-            const { width, height } = page.getSize();
-            const fontSize = Math.min(width, height) * 0.07;
-
-            // Draw watermark diagonally across the page (repeated grid)
-            const text = 'BY PATEL';
-            const cols = 3;
-            const rows = 4;
-            for (let c = 0; c < cols; c++) {
-                for (let r = 0; r < rows; r++) {
-                    page.drawText(text, {
-                        x: (width / cols) * c + fontSize,
-                        y: (height / rows) * r + fontSize,
-                        size: fontSize,
-                        color: rgb(0.75, 0.75, 0.75),  // light grey
-                        opacity: 0.35,
-                        rotate: degrees(45),
-                    });
-                }
-            }
-        }
-
-        const watermarked = await pdfDoc.save();
-
-        // Send as document via Telegram multipart/form-data
+        // Build multipart/form-data and buffer it fully before sending.
+        // Node.js global fetch can't determine Content-Length for a form-data
+        // stream, causing Telegram to return 400. Buffering first fixes that.
         const FormData = require('form-data');
         const form = new FormData();
         form.append('chat_id', String(chatId));
         form.append('caption', caption);
         form.append('parse_mode', 'HTML');
-        form.append('document', Buffer.from(watermarked), {
+        form.append('document', pdfBytes, {
             filename: 'NESTS_Notice.pdf',
             contentType: 'application/pdf',
         });
 
-        // FIX: Node.js global fetch cannot determine Content-Length for an npm
-        // form-data stream, so Telegram receives a malformed multipart body and
-        // returns HTTP 400. Buffering the entire form first gives fetch a plain
-        // Buffer with a known size, and form.getHeaders() provides the correct
-        // Content-Type + boundary — this is the reliable way to upload files.
         const formBuffer = await new Promise((resolve, reject) => {
             const chunks = [];
             form.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
@@ -101,14 +68,12 @@ async function watermarkAndSendPdf(token, chatId, pdfUrl, caption) {
             headers: form.getHeaders(),
         });
 
-        // Log Telegram API response so errors are visible in the terminal
         if (!tgRes.ok) {
             const errBody = await tgRes.text();
             throw new Error(`Telegram API ${tgRes.status}: ${errBody}`);
         }
     } catch (e) {
-        // Fallback: send link-only message if PDF processing fails
-        console.error('watermarkAndSendPdf error:', e.message);
+        console.error('sendPdf error:', e.message);
         try { addLog(`⚠ PDF send failed (chat ${chatId}): ${e.message}`, 'error'); } catch { }
         await sendTg(token, chatId, caption + `\n\n⚠ <i>PDF attachment failed: ${e.message}</i>`);
     }

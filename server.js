@@ -76,8 +76,6 @@ async function watermarkAndSendPdf(token, chatId, pdfUrl, caption) {
         const FormData = require('form-data');
         const form = new FormData();
         form.append('chat_id', String(chatId));
-        // FIX: pass caption as plain string — do NOT pass an options object for string values,
-        // as form-data would treat it as a file/stream and corrupt the field.
         form.append('caption', caption);
         form.append('parse_mode', 'HTML');
         form.append('document', Buffer.from(watermarked), {
@@ -85,9 +83,21 @@ async function watermarkAndSendPdf(token, chatId, pdfUrl, caption) {
             contentType: 'application/pdf',
         });
 
+        // FIX: Node.js global fetch cannot determine Content-Length for an npm
+        // form-data stream, so Telegram receives a malformed multipart body and
+        // returns HTTP 400. Buffering the entire form first gives fetch a plain
+        // Buffer with a known size, and form.getHeaders() provides the correct
+        // Content-Type + boundary — this is the reliable way to upload files.
+        const formBuffer = await new Promise((resolve, reject) => {
+            const chunks = [];
+            form.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+            form.on('end', () => resolve(Buffer.concat(chunks)));
+            form.on('error', reject);
+        });
+
         const tgRes = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
             method: 'POST',
-            body: form,
+            body: formBuffer,
             headers: form.getHeaders(),
         });
 
